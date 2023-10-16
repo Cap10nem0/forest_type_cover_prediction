@@ -1,0 +1,617 @@
+---
+title: "MDS Final Project"
+authors: "Rashmi Chhabria, Anushri Bhagwath, Prathamesh Patil, Yash Nanda"
+date: "4/24/2022"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+
+## Understanding Dataset: 
+
+Let's first import all the required libraries - 
+
+```{r}
+library(tidyverse) # for data exploration and manipulation
+library(randomForest)
+library(corrplot)
+library(RColorBrewer)
+library(expss)
+library(ggplot2)
+library(gbm)
+library(e1071)
+library(ROCR)
+library(caret)
+```
+
+
+Now that we have imported libraries, our first step is to read the data.
+
+
+```{r}
+# Reading the data set:
+forestdata = read.csv('data/covtype.csv', header=TRUE)
+
+# Displaying first 10 rows(observation) of dataset
+head(forestdata,10)
+```
+
+Next, we note down the dimensions of our dataframe using dim().
+
+```{r}
+dim(forestdata)
+```
+
+Above values tell us that currently there are **581012** rows and **55** columns in our dataframe.
+
+Moving ahead, We check the structure of our dataframe to find what data type each column is -
+
+```{r}
+str(forestdata)
+```
+As seen above, every column is a **numeric** value. There is not a single character or factor datatype present in this dataset.
+
+Summary function helps us identify mean, median and inter-quantile range values along with null vlaues present by each column.
+
+```{r}
+summary(forestdata)
+```
+
+
+## Data Cleaning & Transformation:
+
+After understanding the dataset, we can start working on cleaning if required.
+
+Summary function helps us identify mean, median and inter-quantile range values along with null vlaues present by each column.
+
+```{r}
+summary(forestdata)
+```
+
+Since none of the column returned NA's as output from summary(), there are no missing values in this dataset.
+
+
+Next, we work on transforming dataset(Feature Engineering). We will focus on following columns - 
+
+1. Hillshade_9am,Hillshade_Noon and Hillshade_3pm.
+2. Horizontal_Distance_To_Hydrology and Vertical_Distance_To_Hydrology.
+3. Wilderness_Area1, Wilderness_Area2, Wilderness_Area3 and Wilderness_Area4
+4. Soil_Type1, Soil_Type2, Soil_Type3 ...Soil_Type40.
+
+For 1^st^ part we will be combining 3 variables of hillshade by calculating mean:
+
+```{r}
+# Calculating mean of hillshade
+forestdata$Hillshade_mean = (forestdata$Hillshade_9am + forestdata$Hillshade_3pm 
+                             + forestdata$Hillshade_Noon) / 3
+```
+
+For 2^nd^ part we will be combining 2 variables of hydrology using Pythagorus theorem. Following diagram helps us see how two distances form a hypotenuse and Pythagorus theorem is the best way to combine these 2 columns.
+
+![Euclidean Distance between tree and hydrology](D:/Sem 2/IS 517 - Methods for DS/Project/Picture1.png)
+
+```{r}
+# Calculating Euclidean distance(hypotenuse) using pythagorus theorem
+forestdata$Distance_To_Hydrology = (forestdata$Horizontal_Distance_To_Hydrology^2 + forestdata$Vertical_Distance_To_Hydrology^2)^.5
+```
+
+Wilderness columns range from Wilderness_Area1 to Wilderness_Area4 with values 0 and 1 where 1 indicates existence of tree in that wilderness area while 0 indicates absence.
+
+```{r}
+# Create single Wilderness_Area column
+forestdata$Wilderness_Area = 0
+for (i in 11:14) {
+  forestdata$Wilderness_Area[forestdata[,i] == 1] = i-10  
+}
+```
+
+Wilderness columns range from Soil_Type1 to Soil_Type40 with values 0 and 1 where 1 indicates existence of that soil type below our particular tree(observation).
+
+```{r}
+# Create single Soil_Type column
+forestdata$Soil_Type = 0
+for (i in 15:54) {
+  forestdata$Soil_Type[forestdata[,i] == 1] = i-14  
+}
+```
+
+Finally, we have all the required columns ready for exploratory data analysis and model fitting. All we have to do is subset those from original dataframe
+
+Column Reduction:
+
+```{r}
+# Selecting subset from all columns to form our new dataframe
+new_forestdata <- forestdata[, c("Elevation","Aspect","Slope","Distance_To_Hydrology",
+                            "Horizontal_Distance_To_Roadways",
+                            "Horizontal_Distance_To_Fire_Points",
+                            "Wilderness_Area",
+                            "Hillshade_mean","Soil_Type","Cover_Type")]
+```
+
+We will label the wilderness area and cover type for better understanding of our exploratory plots.
+
+```{r}
+new_forestdata = apply_labels(new_forestdata,
+                              Wilderness_Area = c("Rawah" = 1,
+                                                  "Neota" = 2,
+                                                  "Comanche Peak" = 3,
+                                                  "Cache la Poudre" = 4),
+                              Cover_Type = c("Spruce/Fir" = 1,
+                                             "Lodgepole Pine" = 2,
+                                             "Ponderosa Pine" = 3,
+                                             "Cottonwood/Willow" = 4,
+                                             "Aspen" = 5,
+                                             "Douglas Fir" = 6,
+                                             "Krummholz" = 7)
+)
+```
+
+While fitting our model, we encounter a difficulty due to technical restrictions of laptop. Tuning a model comes at a cost of high performance our laptops couldn't handle. As a solution to this, we decided to sample our dataset and run models on less number of observations. 1000 samples from each cover type were picked to ensure minimum bias towards particular cover type.
+
+```{r}
+sampled_forestdata <- (new_forestdata %>%
+                         group_by(Cover_Type) %>% 
+                         sample_n(size = 1000))
+
+dim(sampled_forestdata)
+```
+
+
+
+## Exploratory Data Analysis:
+
+
+### Cover x Soil Type
+```{r}
+palette <- c('#A969E9', '#92C628', '#E2E25C', '#E25C5E', '#5CDEE2', '#F58403', '#5F65DE')
+
+
+ggplot(sampled_forestdata, aes(x = as.factor(Cover_Type), fill = as.factor(Cover_Type))) +
+  geom_bar() +
+  facet_wrap(~reorder(as.factor(Soil_Type), sort.int(as.integer(Soil_Type), decreasing = FALSE)), scales = 'free') +
+  labs(fill = 'Cover Type', title = 'Cover Type by Soil Type') +
+  scale_fill_manual(values = palette) +
+  theme_minimal() +
+  theme(legend.position = 'bottom',
+        plot.title = element_text(hjust = 0.5),
+        axis.title = element_blank(),
+        axis.text = element_blank(),
+        panel.grid = element_blank())
+```
+Observations by Cover and Soil Type:
+1. Krummholz grow predominantly in soil types 35-40 specifically 36 and 37 has only Krumholz growing. There are significant amount of K growing in soil type 21,34,32
+2. Lodgepole Pine are found in majority of soil types. Soil type 25 is seen to have only Lodgepole Pines growing while 9,12,20,28,34 has visible amount of Lodgepoles. We also noticed that Krummholz and Cottonwood/Willow covers share only one soil type: 4 & 10.
+
+### Cover x Elevation
+```{r}
+ggplot(sampled_forestdata, aes(x = as.factor(Cover_Type), y = Elevation)) +
+  geom_violin(aes(fill = as.factor(Cover_Type))) + 
+  geom_point(alpha = 0.01, size = 0.5) +
+  stat_summary(fun = 'median', geom = 'point') +
+  labs(x = 'Cover Type') +
+  scale_fill_manual(values = palette) +
+  theme_minimal() +
+  theme(legend.position = 'none',
+        axis.text.x = element_text(angle = 45,
+                                   hjust = 1),
+        panel.grid.major.x = element_blank())
+```
+Observations by Cover Type and Elevations:
+
+1.	Krummholz cover may be found at extremely high elevations when other types of cover are uncommon. Not only do the Krummholz and Cottonwood/Willow covers lack many of the same soil types, but they are also separated by about 500 meters in elevations. 
+2.	Cottonwood/Willow trees are found in low elevation areas and as Cache la Poudre is one of the low elevation areas and this tree can be found only here.
+3.	Commanche peak is one of the average elevation areas and most of the cover types except Cottonwood/Willow can be found here.
+
+
+### Cover x Elevation x Wilderness Area
+```{r}
+ggplot(sampled_forestdata, aes(x = as.factor(Cover_Type), y = Elevation)) +
+  geom_violin(aes(fill = as.factor(Cover_Type))) + 
+  geom_point(alpha = 0.08, size = 0.5) +
+  stat_summary(aes(group = as.factor(Cover_Type)), 
+               fun = 'median', 
+               geom = 'point',
+               show.legend = FALSE) +
+  labs(x = 'Cover Type by Wilderness Area') +
+  scale_fill_manual(name = 'Cover Type',
+                    values = palette) +
+  facet_grid(. ~ as.factor(Wilderness_Area), scales = 'free_x', switch = 'x') +
+  theme_minimal() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.spacing = unit(1, 'lines'))
+```
+We observe that in the wilderness area named Neota, we can see a minimum growth of trees and only three types of trees which are Krummholz, Spruce/Fir, Lodgepole pine with a maximum count of 250 for any given cover type.
+
+
+### Cover x Wilderness area x count
+
+```{r}
+ggplot(sampled_forestdata, aes(x = as.factor(Cover_Type), fill = as.factor(Cover_Type))) +
+  geom_bar() +
+  facet_wrap(~as.factor(Wilderness_Area)) +
+  labs(x = 'Cover Type by Wilderness Area', y = 'Count') +
+  scale_fill_manual(name = 'Cover Type',
+                    values = palette) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.spacing = unit(1, 'line'))
+```
+
+
+### cover x Aspect
+
+```{r}
+ggplot(sampled_forestdata, aes(x = as.factor(Cover_Type), y = Aspect)) +
+  geom_violin(aes(fill = as.factor(Cover_Type))) +
+  stat_summary(fun = 'median', geom = 'point') +
+  geom_point(alpha = 0.1, size = 0.3) +
+  scale_fill_manual(values = palette) +
+  theme_minimal() +
+  theme(legend.position = 'none',
+        panel.grid.major.x = element_blank())
+```
+
+
+### cover x Distance(Hydrology, roadway, firepoints)
+
+```{r}
+sampled_forestdata %>% 
+  gather(Measure, Distance, 
+         Distance_To_Hydrology:Horizontal_Distance_To_Fire_Points) %>% 
+  mutate(Measure = factor(Measure, 
+                          levels = c('Distance_To_Hydrology',
+                                     'Horizontal_Distance_To_Roadways',
+                                     'Horizontal_Distance_To_Fire_Points'),
+                          labels = c('Distance to Hydrology',
+                                     'Horizontal Distance to Roadways',
+                                     'Horizontal Distance to Fire Points'))) %>% 
+  
+  
+  ggplot(aes(x = as.factor(Cover_Type), y = Distance, fill = as.factor(Cover_Type))) +
+  geom_violin() +
+  geom_point(alpha = 0.01, size = 0.5) +
+  stat_summary(fun = 'median', geom = 'point',
+               show.legend = FALSE) +
+  facet_wrap(~Measure, scales = 'free_y') +
+  labs(x = NULL, y = 'Distance (m)') +
+  scale_fill_manual(name = 'Cover Type',
+                    values = palette) +
+  theme_minimal() +
+  theme(legend.position = 'bottom',
+        axis.text.x = element_blank(),
+        panel.spacing = unit(1, 'line'),
+        panel.grid.major.x = element_blank())
+```
+Observations:
+1.	Distance to hydrology
+  + Cottonwood/Willow is found closest to the water body and the growth Krummholz      is not dependent on the distance from hydrology as they can be seen growing        in areas farther away from the water bodies hence proving our previous observation which stated that Krummholz is seen in higher elevation areas.
+
+2.	Distance to roadways
+  + The distance to roadways indicates that how well a cover type deals with human     interference and hence we can see that Cottonwood/Willow grows in areas closer     to roadways and Krummholz are found away from the roadways. While the other        tree types don’t seem to be affected by this factor.
+
+3.	Horizontal distance to fire points:
+  + This factor tells us about the ability of cover type to regrow after a forest      fire. Looking at the graph we can see that Ponderosa Pine, Cottonwood/Willow       and Douglas Fir seem to grow in areas close to fire point while this factor        doesn’t seem to have a great effect on the other tree types.
+
+
+### correlation among variables
+
+```{r}
+
+M <-cor(sampled_forestdata)
+corrplot(M, type="upper", order="hclust",
+         col=brewer.pal(n=8, name="RdYlBu"))
+
+
+set.seed(1808)
+
+vars <- randomForest::randomForest(as.factor(Cover_Type) ~ ., 
+                                   data = sampled_forestdata,
+                                   importance = TRUE)
+
+varImpPlot(vars)
+```
+
+From both the correlation graphs we can see that Wilderness area, Slope and Hill shade correlate directly with Cover Type but as Wilderness area along with distance to Hydrology, distance to Fire points and elevation act as strong factors, we chose all the factors while fitting the models.
+
+## Model Fitting:
+
+Let's start fitting our models now. But before that, we shall split outr dataset into 70-30 split for Training and Test dataset.
+
+```{r}
+# Setting seed to reproduce same dataset
+set.seed(1)
+
+# Generating training dataset
+training_forestdata = sampled_forestdata[ sample(nrow(sampled_forestdata), round(0.7*nrow(sampled_forestdata))), ]
+
+# Generating test dataset
+test_forestdata = sampled_forestdata[-(sample(nrow(sampled_forestdata), round(0.7*nrow(sampled_forestdata)))), ]
+```
+
+
+### Bagging:
+
+We will try our classification using Bagging first. 
+
+Bagging is often called as bootstrap aggregation. It is type of ensemble learning method and reduces variance in the dataset.
+
+In this method, several random samples are chosen with replacement and then the model is trained using weak learners. Highest majority class of all the models gives us accurate prediction. We must note that since samples are chosen with replacement, sample maybe repeated multiple times in sample. 
+
+Two major advantages of bagging are
+
+1. Variance Reduction - Bagging reduces variance in dataset and hence can be useful in cases of high dimensional data with missing values. Missing values in high dimensional data can lead to overfitting.
+2. Bagging is easy to implement as it uses weak learners and associated math is relatively complex compared to other models.
+
+Let's move to actually fitting the model -
+
+```{r}
+set.seed(1)
+bagging.forestdata <- randomForest(Cover_Type ~ ., data = training_forestdata, mtry = 9, importance = TRUE)
+bagging.forestdata
+```
+
+Evaluating performance on test data set & plotting confusion matrix:
+```{r}
+yhat.bag <- round(predict(bagging.forestdata, newdata = test_forestdata))
+table(yhat.bag, test_forestdata$Cover_Type)
+```
+
+Accuracy:
+```{r}
+bagging_accuracy = mean(yhat.bag == test_forestdata$Cover_Type)
+bagging_accuracy
+```
+
+### Boosting:
+
+Boosting is an extension of bagging which utilizes weak learners and strong learners reducing training errors. A random sample is selected and the model is fitted on it after which weak learners are dropped or combined into stronger learners. This compensates weaker learners from Bagging where they are trained parallely in contrast to sequential in boosting.
+
+The biggest advantage of Boosting algorithm is the computational efficiency due to selective features(strong learners) which reduces dimensions. Less dimensions means increase in computational speed.
+
+This in turn is also the biggest disadvantage as sequential feature selection means decreased flexibility and scalability.
+
+We will now fit gradient boosting model for our classsification problem -
+
+```{r}
+training_forestdata$Cover_Type <- as.factor(training_forestdata$Cover_Type)
+
+training_forestdata$Cover_Type <- as.numeric(training_forestdata$Cover_Type)
+
+test_forestdata$Cover_Type <- as.factor(test_forestdata$Cover_Type)
+
+test_forestdata$Cover_Type <- as.numeric(test_forestdata$Cover_Type)
+
+test_forestdata$Cover_Type <- factor(test_forestdata$Cover_Type, levels=c(1:7), labels = c(1:7))
+
+# Fitting the model
+boosting = gbm(Cover_Type ~ ., data = training_forestdata,
+                         distribution = "multinomial",
+                         n.trees = 1000,
+                         interaction.depth = 3)
+```
+
+```{r}
+# Setting seed for reproducibility
+set.seed(999)
+
+# Making predictions
+boost_pred = predict(boosting, test_forestdata, n.trees=1000, type='response')
+boost_pred = apply(boost_pred, 1, which.max)
+
+boost_pred = as.factor(boost_pred)
+
+# Printing confusion matrix
+confusionMatrix(boost_pred, test_forestdata$Cover_Type, positive='1')
+```
+Accuracy:
+
+```{r}
+boosting_accuracy <- mean(boost_pred == test_forestdata$Cover_Type)
+boosting_accuracy
+```
+
+
+
+### Random Forest:
+
+Random forests provide an improvement over bagged trees by way of a small tweak that decorrelates the trees. It contains a number of decision trees on various subsets of the given dataset and takes the average to improve the predictive accuracy of that dataset.
+
+Higher number of trees produces higher accuracy and thwarts overfitting.
+
+Advantages of Random Forest classifier - 
+
+1. Less training time with high accuracy(even for larger datasets).
+2. It gives amazing accuracy even when huge amount of data is missing(null values or NaNs)
+
+The only disadvantage with random forest is high prediction time with large number of trees making it ineffective for real time applications. Not to be confused with training time. Even with less training time, predictions can take time.
+
+
+```{r}
+set.seed (1)
+random.forest <- randomForest (Cover_Type~ ., data = training_forestdata ,
+                             ntree=500, importance = TRUE)
+random.forest
+```
+
+```{r}
+yhat_bag <- round(predict(random.forest , newdata = test_forestdata, type = "class"))
+table(yhat_bag, test_forestdata$Cover_Type)
+```
+
+Accuracy:
+```{r}
+random_accuracy = mean(yhat_bag == test_forestdata$Cover_Type)
+random_accuracy
+```
+
+### Support Vector Classifier:
+
+While training using support vector classifier, sometimes called a soft margin classifier, rather than seeking the largest possible margin so that every observation is not only on the correct side of the hyperplane but also on the correct side of the margin, we instead allow some observations to be on the incorrect side of the margin, or even the incorrect side of the hyperplane. This compensates for any additional points that maybe added to the dataset making it robust to chanes.
+
+For cost=0.01
+```{r}
+fit_svm_linear <- svm(Cover_Type ~ ., data = training_forestdata, kernel='linear',
+                      cost = 0.01, epsilon = 0.01)
+summary(fit_svm_linear)
+```
+
+
+```{r}
+# Predicting the Test values
+test_svm_pred <- round(predict(fit_svm_linear, test_forestdata))
+# Calculating Accuracy on Test dataset
+svc_accuracy <- mean(test_svm_pred == test_forestdata$Cover_Type)
+svc_accuracy
+```
+```{r}
+svm_lin_tune <- tune(svm, Cover_Type~., data = training_forestdata, kernel = "linear", ranges = list(cost = c(0.01, 0.05, 0.1, 0.5, 1, 5, 10)))
+summary(svm_lin_tune)
+```
+
+As we see in above table, error increases when cost is increased. But just to be safe, we will try cost>10 to see if we get any optimum value.
+
+```{r}
+svm_lin_tune <- tune(svm, Cover_Type~., data = training_forestdata, kernel = "linear", ranges = list(cost = c(20,30,40,50,60)))
+summary(svm_lin_tune)
+```
+
+We can see that error remains more or less the same for values above 10.
+
+Hence, our first calculation gives us the least error and most accuracy i.e. 26.47%. There is no point in further exploring this model.
+
+
+### Support Vector Machine Classifier:
+
+The support vector classifier seeks a linear boundary, and consequently performs very poorly. Hence, we use non-linear boundary created by support vector machine classifier to fit the model. The support vector machine (SVM) is an extension of the support vector classifier that results from enlarging the feature space in a specific way, using kernels. 
+
+For cost= 0.01
+```{r}
+fit_svm <- svm(Cover_Type ~ ., data = training_forestdata, cost = 0.01, epsilon = 0.01)
+summary(fit_svm)
+```
+
+
+```{r}
+# Predicting the Test values
+test_svm_pred <- round(predict(fit_svm, test_forestdata))
+# Calculating Accuracy on Test dataset
+mean(test_svm_pred == test_forestdata$Cover_Type)
+```
+As seen above, for cost=0.01 we get only 20.8% accuracy.
+
+```{r}
+svm_rad_tune <- tune(svm, Cover_Type~., data = training_forestdata, kernel = "radial", ranges = list(cost = c(0.01, 0.05, 0.1, 0.5, 1, 5, 10)))
+summary(svm_rad_tune)
+```
+
+As the cost increases, our error decreases. Let's try fitting the model at cost=10 and check how accurate is the model.
+
+
+For cost= 10
+```{r}
+fit_svm <- svm(Cover_Type ~ ., data = training_forestdata, cost = 10, epsilon = 0.01)
+summary(fit_svm)
+```
+```{r}
+# Predicting the Test values
+test_svm_pred <- round(predict(fit_svm, test_forestdata))
+# Calculating Accuracy on Test dataset
+mean(test_svm_pred == test_forestdata$Cover_Type)
+```
+
+
+We get 54% accuracy. Let's try furthering the cost using tune() to find optimal values.
+
+```{r}
+svm_rad_tune <- tune(svm, Cover_Type~., data = training_forestdata, kernel = "radial", ranges = list(cost = c(10,25,50,75,100)))
+summary(svm_rad_tune)
+```
+
+As seen from the table, the error drops from 50 to 75 and then increases again. Hence, the optimal cost lies somewhere between.
+
+With little error and trial we found, optimal value at 65
+
+For cost= 65
+
+```{r}
+fit_svm <- svm(Cover_Type ~ ., data = training_forestdata, cost = 65, epsilon = 0.01)
+summary(fit_svm)
+```
+
+```{r}
+# Predicting the Test values
+test_svm_pred <- round(predict(fit_svm, test_forestdata))
+# Calculating Accuracy on Test dataset
+svmc_accuracy <- mean(test_svm_pred == test_forestdata$Cover_Type)
+svmc_accuracy
+```
+Thus, the accuracy is 61.57% for SVM classifier.
+
+### Summary Statistics:
+
+1. Which model will be best suited to classify the type of predominant tree that      will develop in each location based on the environment?
+
+
+```{r}
+df = data.frame(  
+  "Model Name" = "Accuracy",
+  "Bagging" = bagging_accuracy,
+  "Random Forest" = random_accuracy, 
+  "Boosting" = boosting_accuracy,
+  "Support Vector Classifier" = svc_accuracy,
+  "SVM Classifier" = svmc_accuracy
+)  
+Models <- c('Bagging', 'Random Forest', 'Boosting', 
+            'Support Vector Classifier', 'SVM Classifier')
+Accuracy <- c(bagging_accuracy, random_accuracy, boosting_accuracy,
+              svc_accuracy,svmc_accuracy)
+accuracy_table <- data.frame(Models,Accuracy)
+accuracy_table
+```
+  
+2. What are the most prevalent tree species in the Roosevelt National Forest?
+
+
+  Counting the trees for every type in the Roosevelt National Forest:
+```{r}
+new_forestdata %>% 
+  mutate(Cover_Type = str_replace_all(Cover_Type,
+                                      c(`1` = 'Spruce/Fir',
+                                        `2` = 'Lodgepole Pine',
+                                        `3` = 'Ponderosa Pine',
+                                        `4` = 'Cottonwood/Willow',
+                                        `5` = 'Aspen',
+                                        `6` = 'Douglas Fir',
+                                        `7` = 'Krummholz')),
+         Cover_Type = as.factor(Cover_Type)) %>% 
+  group_by(Cover_Type) %>% 
+  summarise(Count = n()) %>% 
+  arrange(desc(Count)) %>%
+  knitr::kable(booktabs = TRUE)
+```
+
+
+3. Which tree types can grow in most diverse environments?
+  
+  After looking at the EDA we can say that Krummholz seems to grow in much diverse   environments like widespread elevation, distance to hydrology and soil type.
+  
+4. Are there any tree species which are susceptible to environmental factors?
+
+  Cottonwood/Willow has lowest count of trees in the Roosevelt National Forest and   the EDA also confirms that this tree type is the most susceptible to all the       factors.
+  
+  
+## References
+
+1. https://www.kaggle.com/code/rsizem2/forest-cover-type-feature-engineering
+
+2. https://rstudio-pubs-static.s3.amazonaws.com/160297_f7bcb8d140b74bd19b758eb328344908.html
+
+
