@@ -23,4 +23,8 @@ A concise introduction to your project, explaining its purpose and key features.
 - **Feature 2**: Explain feature 2.
 - **Feature 3**: Highlight feature 3.
 
-
+```
+<p align="center">
+  If you find this project helpful, consider giving it a ⭐️!
+</p>
+```
